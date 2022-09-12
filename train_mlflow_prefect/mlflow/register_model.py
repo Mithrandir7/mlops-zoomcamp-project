@@ -79,6 +79,7 @@ def run(data_path, log_top):
     # register the best model
     model_uri = f"runs:/{best_run.info.run_id}/models"
     mlflow.register_model(model_uri=model_uri, name="house-rent-regressor")
+    os.environ["BEST_RUN_ID"] = best_run.info.run_id
 
 
 if __name__ == '__main__':

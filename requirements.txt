@@ -6,3 +6,4 @@ seaborn
 hyperopt
 xgboost
 boto3
+prefect==2.0b5
