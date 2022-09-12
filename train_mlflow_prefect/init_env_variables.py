@@ -1,4 +1,3 @@
-# Here goes different constants and flags
 import os
 
 
