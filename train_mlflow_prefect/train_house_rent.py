@@ -20,6 +20,7 @@ from mlflow.tracking import MlflowClient
 from prefect import flow, task
 from prefect.task_runners import SequentialTaskRunner
 import configparser
+import shutil
 
 @task
 def dump_pickle(obj, filename):
@@ -157,11 +158,26 @@ def hpo(X_train, y_train, X_valid, y_valid, num_trials):
                     rstate=rstate
                 )
 
-def write_config(best_run_id, dv_full_path):
+def write_config(best_run_id, dv_full_path, artifact_uri):
     config = configparser.ConfigParser()
-    config['DEFAULT'] = {'best_run_id': best_run_id, 'dv_full_path': dv_full_path}
+    config.read('../config.config')
+    d1 = dict(config['DEFAULT'])
+    d2 = {'best_run_id': best_run_id, 'dv_full_path': dv_full_path, 'S3_BUCKET': os.getenv('S3_BUCKET', ''), 'ARTIFACT_URI': artifact_uri}
+    config['DEFAULT'] = {**d1, **d2}
+    # if TRACKING_SERVER_HOST != '':    
+    #     mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
+    # else:
+    #     mlflow.set_tracking_uri("http://127.0.0.1:5000")'}
     with open('../config.config', 'w') as configfile:
         config.write(configfile)
+    shutil.copy('../config.config', '../web-service')
+
+def read_config():
+    config = configparser.ConfigParser()
+    config.read('../config.config')
+    TRACKING_SERVER_HOST = config['DEFAULT']['TRACKING_SERVER_HOST']
+    AWS_PROFILE = config['DEFAULT']['AWS_PROFILE']
+    return TRACKING_SERVER_HOST, AWS_PROFILE
 
 
 @flow(task_runner=SequentialTaskRunner())
@@ -190,9 +206,10 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     dump_pickle((X_test, y_test), os.path.join(dest_path, "test.pkl"))
 
     # ***Train with hyperparameter optimization***
-    TRACKING_SERVER_HOST = os.getenv('TRACKING_SERVER_HOST', '')
+    TRACKING_SERVER_HOST, AWS_PROFILE = read_config()
     if TRACKING_SERVER_HOST != '':    
         mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
+        os.environ["AWS_PROFILE"] = AWS_PROFILE
     else:
         mlflow.set_tracking_uri("http://127.0.0.1:5000")
         #mlflow.set_tracking_uri("sqlite:///mlflow.db")
@@ -202,7 +219,7 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     X_train, y_train = load_pickle(os.path.join(dest_path, "train.pkl")).result()
     X_valid, y_valid = load_pickle(os.path.join(dest_path, "valid.pkl")).result()
 
-    best_result = hpo(X_train, y_train, X_valid, y_valid, num_trials_hpo).result()
+    best_result = hpo(X_train, y_train, X_valid, y_valid, num_trials=5).result()
 
     # ***Train and register best model***
     HPO_EXPERIMENT_NAME = "random-forest-hyperopt"
@@ -242,7 +259,8 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     # save the id of the best run and the path to the dictionary vectorizer
     dv_abs_path = os.path.abspath(os.path.join(dest_path, "dv.pkl"))
     os.environ["DV_FULL_PATH"] = dv_abs_path
-    write_config(str(best_run.info.run_id), str(dv_abs_path))
+    artifact_uri = best_run.info.artifact_uri
+    write_config(str(best_run.info.run_id), str(dv_abs_path), str(artifact_uri))
 
     # Promote the best model    
     promote_best_model("Staging")
