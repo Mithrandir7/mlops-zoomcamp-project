@@ -6,7 +6,6 @@ import mlflow
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 
-
 def load_pickle(filename: str):
     with open(filename, "rb") as f_in:
         return pickle.load(f_in)
@@ -16,7 +15,12 @@ def run(data_path):
 
     X_train, y_train = load_pickle(os.path.join(data_path, "train.pkl"))
     X_valid, y_valid = load_pickle(os.path.join(data_path, "valid.pkl"))
-    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    TRACKING_SERVER_HOST = os.getenv('TRACKING_SERVER_HOST', '')
+    if TRACKING_SERVER_HOST != '':
+        mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
+    else:
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    
     mlflow.set_experiment("house-rent-experiment")
     mlflow.sklearn.autolog()
     with mlflow.start_run():

@@ -12,8 +12,12 @@ from sklearn.metrics import mean_squared_error
 
 HPO_EXPERIMENT_NAME = "random-forest-hyperopt"
 EXPERIMENT_NAME = "random-forest-best-models"
+TRACKING_SERVER_HOST = os.getenv('TRACKING_SERVER_HOST', '')
+if TRACKING_SERVER_HOST != '':
+    mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
+else:
+    mlflow.set_tracking_uri("http://127.0.0.1:5000")
 
-mlflow.set_tracking_uri("http://127.0.0.1:5000")
 mlflow.set_experiment(EXPERIMENT_NAME)
 mlflow.sklearn.autolog()
 
