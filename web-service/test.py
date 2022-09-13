@@ -4,7 +4,7 @@ house = {
     "City": "Kolkata",
     "Area Locality": "Bandel",
     "Tenant Preferred": "Bachelors",
-    "BHK": 2,
+    "BHK": 10,
     "Size": 1700
 }
 
