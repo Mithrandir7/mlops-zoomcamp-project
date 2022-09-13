@@ -5,6 +5,14 @@ import configparser
 import mlflow
 import os
 
+def read_config():
+    config = configparser.ConfigParser()
+    config.read('./config.config')
+    best_run_id = config['DEFAULT']['best_run_id']
+    return best_run_id
+
+best_run_id = read_config()
+
 with open('model.pkl', 'rb') as f_in:
     (dv, model) = pickle.load(f_in)
 
@@ -35,6 +43,7 @@ def predict_endpoint():
 
     result = {
         'rent': pred,
+        'model_version': best_run_id
     }
 
     return jsonify(result)

@@ -9,7 +9,7 @@ COPY [ "Pipfile", "Pipfile.lock", "./" ]
 
 RUN pipenv install --system --deploy
 
-COPY [ "predict_for_docker.py", "model.pkl", "./" ]
+COPY [ "predict_for_docker.py", "model.pkl", "config.config", "./" ]
 
 EXPOSE 9696
 

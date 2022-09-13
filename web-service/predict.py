@@ -9,15 +9,15 @@ def read_config():
     config = configparser.ConfigParser()
     config.read('./config.config')
     best_run_id = config['DEFAULT']['best_run_id']
-    dv_full_path = config['DEFAULT']['dv_full_path']
     artifact_uri = config['DEFAULT']['artifact_uri']
     tracking_server_host = config['DEFAULT']['tracking_server_host']
-    return best_run_id, dv_full_path, artifact_uri, tracking_server_host, aws_profile
+    return best_run_id, artifact_uri, tracking_server_host
 
-best_run_id, dv_full_path, artifact_uri, tracking_server_host, aws_profile = read_config()
+best_run_id, artifact_uri, tracking_server_host = read_config()
 
 if tracking_server_host == '':
-    logged_model = f'runs:/{best_run_id}/model'
+    mlflow.set_tracking_uri("http://127.0.0.1:5000")
+    logged_model = f'../train_mlflow_prefect/{artifact_uri[1:]}/model'
 else:
     logged_model = f'{artifact_uri}/model'
 
