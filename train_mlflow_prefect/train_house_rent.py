@@ -69,46 +69,10 @@ def preprocess(dicts, dv: DictVectorizer, fit_dv: bool = False):
         X = dv.transform(dicts)
     return X, dv
 
-# @task
-# def preprocess(df: pd.DataFrame, dv: DictVectorizer, fit_dv: bool = False):
-#     df['City_Area'] = df['City'] + '_' + df['Area Locality']
-#     categorical = ['City_Area', 'Tenant Preferred']
-#     numerical = ['BHK', 'Size']
-#     dicts = df[categorical + numerical].to_dict(orient='records')
-#     if fit_dv:
-#         X = dv.fit_transform(dicts)
-#     else:
-#         X = dv.transform(dicts)
-#     return X, dv
-
-
 @task
 def load_pickle(filename):
     with open(filename, "rb") as f_in:
         return pickle.load(f_in)
-
-
-# @task
-# def train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test,params):
-
-#     SPACE = {
-#         'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
-#         'n_estimators': scope.int(hp.quniform('n_estimators', 10, 50, 1)),
-#         'min_samples_split': scope.int(hp.quniform('min_samples_split', 2, 10, 1)),
-#         'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 4, 1)),
-#         'random_state': 42
-#     }
-
-#     with mlflow.start_run():
-#         params = space_eval(SPACE, params)
-#         rf = RandomForestRegressor(**params)
-#         rf.fit(X_train, y_train)
-
-#         # evaluate model on the validation and test sets
-#         valid_rmse = mean_squared_error(y_valid, rf.predict(X_valid), squared=False)
-#         mlflow.log_metric("valid_rmse", valid_rmse)
-#         test_rmse = mean_squared_error(y_test, rf.predict(X_test), squared=False)
-#         mlflow.log_metric("test_rmse", test_rmse)
 
 @task
 def train_and_log_model(dict_train, y_train, dict_val, y_val, dict_test, y_test, params):
@@ -150,19 +114,9 @@ def train_and_log_model(dict_train, y_train, dict_val, y_val, dict_test, y_test,
         mlflow.log_metric("test_rmse", test_rmse)
         # log the pipeline  
         mlflow.sklearn.log_model(pipeline, artifact_path="model")
-        
-
 
 @task
-def promote_best_model(stage):
-
-    # TRACKING_SERVER_HOST = os.getenv('TRACKING_SERVER_HOST', '')
-    # if TRACKING_SERVER_HOST != '':    
-    #     mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
-    # else:
-    #     mlflow.set_tracking_uri("http://127.0.0.1:5000")
-
-    #mlflow.set_tracking_uri("sqlite:///mlflow.db")
+def promote_best_model(stage):  
     
     mlflow.set_experiment("house-rent-experiment")
     client = MlflowClient()
@@ -226,10 +180,7 @@ def write_config(best_run_id, dv_full_path, artifact_uri):
     d1 = dict(config['DEFAULT'])
     d2 = {'best_run_id': best_run_id, 'dv_full_path': dv_full_path, 'S3_BUCKET': os.getenv('S3_BUCKET', ''), 'ARTIFACT_URI': artifact_uri}
     config['DEFAULT'] = {**d1, **d2}
-    # if TRACKING_SERVER_HOST != '':    
-    #     mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
-    # else:
-    #     mlflow.set_tracking_uri("http://127.0.0.1:5000")'}
+
     with open('../config.config', 'w') as configfile:
         config.write(configfile)
     shutil.copy('../config.config', '../web-service')
@@ -290,7 +241,7 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     X_train, y_train = load_pickle(os.path.join(dest_path, "train.pkl")).result()
     X_valid, y_valid = load_pickle(os.path.join(dest_path, "valid.pkl")).result()
 
-    best_result = hpo(X_train, y_train, X_valid, y_valid, num_trials=5).result()
+    best_result = hpo(X_train, y_train, X_valid, y_valid, num_trials=num_trials_hpo).result()
 
     # ***Train and register best model***
     HPO_EXPERIMENT_NAME = "random-forest-hyperopt"

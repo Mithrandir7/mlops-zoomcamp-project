@@ -1,4 +1,5 @@
 import argparse
+from copy import deepcopy
 import os
 import pickle
 
@@ -20,6 +21,8 @@ from mlflow.tracking import MlflowClient
 from prefect import flow, task
 from prefect.task_runners import SequentialTaskRunner
 import configparser
+import shutil
+from sklearn.pipeline import make_pipeline
 
 @task
 def dump_pickle(obj, filename):
@@ -50,26 +53,28 @@ def read_dataframe(filename: str):
     return df
 
 @task
-def preprocess(df: pd.DataFrame, dv: DictVectorizer, fit_dv: bool = False):
+def prepare_dictionaries(df: pd.DataFrame):
     df['City_Area'] = df['City'] + '_' + df['Area Locality']
     categorical = ['City_Area', 'Tenant Preferred']
     numerical = ['BHK', 'Size']
     dicts = df[categorical + numerical].to_dict(orient='records')
+    return dicts
+
+@task
+def preprocess(dicts, dv: DictVectorizer, fit_dv: bool = False):  
     if fit_dv:
         X = dv.fit_transform(dicts)
     else:
         X = dv.transform(dicts)
     return X, dv
 
-
 @task
 def load_pickle(filename):
     with open(filename, "rb") as f_in:
         return pickle.load(f_in)
 
-
 @task
-def train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test,params):
+def train_and_log_model(dict_train, y_train, dict_val, y_val, dict_test, y_test, params):
 
     SPACE = {
         'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
@@ -80,26 +85,37 @@ def train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test,param
     }
 
     with mlflow.start_run():
+        params2 = deepcopy(params)
         params = space_eval(SPACE, params)
-        rf = RandomForestRegressor(**params)
-        rf.fit(X_train, y_train)
+        mlflow.log_params(params)
+
+        pipeline = make_pipeline(
+            DictVectorizer(),
+            RandomForestRegressor(**params)
+        )
+
+        pipeline.fit(dict_train, y_train)
+        y_pred_val = pipeline.predict(dict_val)
+
+        params2 = space_eval(SPACE, params2)
+        pipeline2 = make_pipeline(
+            DictVectorizer(),
+            RandomForestRegressor(**params)
+        )        
+
+        pipeline2.fit(dict_train, y_train)
+        y_pred_test = pipeline2.predict(dict_test)
 
         # evaluate model on the validation and test sets
-        valid_rmse = mean_squared_error(y_valid, rf.predict(X_valid), squared=False)
+        valid_rmse = mean_squared_error(y_val, y_pred_val, squared=False)
         mlflow.log_metric("valid_rmse", valid_rmse)
-        test_rmse = mean_squared_error(y_test, rf.predict(X_test), squared=False)
+        test_rmse = mean_squared_error(y_test, y_pred_test, squared=False)
         mlflow.log_metric("test_rmse", test_rmse)
+        # log the pipeline  
+        mlflow.sklearn.log_model(pipeline, artifact_path="model")
 
 @task
-def promote_best_model(stage):
-
-    # TRACKING_SERVER_HOST = os.getenv('TRACKING_SERVER_HOST', '')
-    # if TRACKING_SERVER_HOST != '':    
-    #     mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
-    # else:
-    #     mlflow.set_tracking_uri("http://127.0.0.1:5000")
-
-    #mlflow.set_tracking_uri("sqlite:///mlflow.db")
+def promote_best_model(stage):  
     
     mlflow.set_experiment("house-rent-experiment")
     client = MlflowClient()
@@ -157,11 +173,23 @@ def hpo(X_train, y_train, X_valid, y_valid, num_trials):
                     rstate=rstate
                 )
 
-def write_config(best_run_id, dv_full_path):
+def write_config(best_run_id, dv_full_path, artifact_uri):
     config = configparser.ConfigParser()
-    config['DEFAULT'] = {'best_run_id': best_run_id, 'dv_full_path': dv_full_path}
+    config.read('../config.config')
+    d1 = dict(config['DEFAULT'])
+    d2 = {'best_run_id': best_run_id, 'dv_full_path': dv_full_path, 'S3_BUCKET': os.getenv('S3_BUCKET', ''), 'ARTIFACT_URI': artifact_uri}
+    config['DEFAULT'] = {**d1, **d2}
+
     with open('../config.config', 'w') as configfile:
         config.write(configfile)
+    shutil.copy('../config.config', '../web-service')
+
+def read_config():
+    config = configparser.ConfigParser()
+    config.read('../config.config')
+    TRACKING_SERVER_HOST = config['DEFAULT']['TRACKING_SERVER_HOST']
+    AWS_PROFILE = config['DEFAULT']['AWS_PROFILE']
+    return TRACKING_SERVER_HOST, AWS_PROFILE
 
 
 @flow(task_runner=SequentialTaskRunner())
@@ -177,10 +205,19 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     y_valid = df_valid[target].values
     y_test = df_test[target].values
 
+    df_train = df_train.drop(columns=target)
+    df_valid = df_valid.drop(columns=target)
+    df_test = df_test.drop(columns=target)
+
     dv = DictVectorizer()
-    X_train, dv = preprocess(df_train, dv, fit_dv=True).result()
-    X_valid, _ = preprocess(df_valid, dv, fit_dv=False).result()
-    X_test, _ = preprocess(df_test, dv, fit_dv=False).result()
+
+    dicTrain = prepare_dictionaries(df_train)
+    dicValid = prepare_dictionaries(df_valid)
+    dicTest = prepare_dictionaries(df_test)
+
+    X_train, dv = preprocess(dicTrain, dv, fit_dv=True).result()
+    X_valid, _ = preprocess(dicValid, dv, fit_dv=False).result()
+    X_test, _ = preprocess(dicTest, dv, fit_dv=False).result()
 
     os.makedirs(dest_path, exist_ok=True)
 
@@ -190,9 +227,10 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     dump_pickle((X_test, y_test), os.path.join(dest_path, "test.pkl"))
 
     # ***Train with hyperparameter optimization***
-    TRACKING_SERVER_HOST = os.getenv('TRACKING_SERVER_HOST', '')
+    TRACKING_SERVER_HOST, AWS_PROFILE = read_config()
     if TRACKING_SERVER_HOST != '':    
         mlflow.set_tracking_uri(f"http://{TRACKING_SERVER_HOST}:5000")
+        os.environ["AWS_PROFILE"] = AWS_PROFILE
     else:
         mlflow.set_tracking_uri("http://127.0.0.1:5000")
         #mlflow.set_tracking_uri("sqlite:///mlflow.db")
@@ -202,7 +240,7 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     X_train, y_train = load_pickle(os.path.join(dest_path, "train.pkl")).result()
     X_valid, y_valid = load_pickle(os.path.join(dest_path, "valid.pkl")).result()
 
-    best_result = hpo(X_train, y_train, X_valid, y_valid, num_trials_hpo).result()
+    best_result = hpo(X_train, y_train, X_valid, y_valid, num_trials=num_trials_hpo).result()
 
     # ***Train and register best model***
     HPO_EXPERIMENT_NAME = "random-forest-hyperopt"
@@ -221,7 +259,7 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     )
   
     for run in runs:
-        train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test, params=run.data.params)
+        train_and_log_model(dicTrain, y_train, dicValid, y_valid, dicTest, y_test, params=run.data.params)
    
     experiment = client.get_experiment_by_name(EXPERIMENT_NAME)
     best_run = client.search_runs(
@@ -238,11 +276,16 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     run_id = os.getenv('BEST_RUN_ID', '')
     print(f'Best run id: {run_id}')
 
+    path_art = mlflow.artifacts.download_artifacts(run_id=best_run.info.run_id, dst_path="./mlflow_artifacts")
+    print(path_art)
+    shutil.copy('./mlflow_artifacts/model/model.pkl', '../web-service')
+
 
     # save the id of the best run and the path to the dictionary vectorizer
     dv_abs_path = os.path.abspath(os.path.join(dest_path, "dv.pkl"))
     os.environ["DV_FULL_PATH"] = dv_abs_path
-    write_config(str(best_run.info.run_id), str(dv_abs_path))
+    artifact_uri = best_run.info.artifact_uri
+    write_config(str(best_run.info.run_id), str(dv_abs_path), str(artifact_uri))
 
     # Promote the best model    
     promote_best_model("Staging")
@@ -256,7 +299,7 @@ DeploymentSpec(
     flow=main_flow,
     name="model_training",
     schedule=CronSchedule(
-        cron="0 2 30 * *",
+        cron="0 2 15 * *",
         timezone="America/Montevideo"),
     flow_runner=SubprocessFlowRunner(),
     tags=["ml"]
