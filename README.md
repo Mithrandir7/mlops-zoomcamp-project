@@ -26,8 +26,17 @@ pip install -r requirements.txt
 pip install -r requirements_pipfreeze.txt
 conda install --yes --file requirements_conda.txt
 ```
+Then, in web-service directory execute
 
+```
+pip install pipenv
+```
+And then either one of (the first installs the packages in Pipfile.lock and the second the ones in Pipfile but they are mostly the same)
+```
+pipenv sync
+pipenv install
+```
 
-
+Double check just in case that scikit-learn version is 1.1.2 and that prefect is 2.0b5
 
 
