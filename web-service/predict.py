@@ -3,9 +3,7 @@ import pickle
 from flask import Flask, request, jsonify
 import configparser
 import mlflow
-
-
-
+import os
 
 def read_config():
     config = configparser.ConfigParser()
@@ -14,14 +12,16 @@ def read_config():
     dv_full_path = config['DEFAULT']['dv_full_path']
     artifact_uri = config['DEFAULT']['artifact_uri']
     tracking_server_host = config['DEFAULT']['tracking_server_host']
-    return best_run_id, dv_full_path, artifact_uri, tracking_server_host
+    return best_run_id, dv_full_path, artifact_uri, tracking_server_host, aws_profile
 
-best_run_id, dv_full_path, artifact_uri, tracking_server_host = read_config()
+best_run_id, dv_full_path, artifact_uri, tracking_server_host, aws_profile = read_config()
 
 if tracking_server_host == '':
     logged_model = f'runs:/{best_run_id}/model'
 else:
     logged_model = f'{artifact_uri}/model'
+
+print(logged_model)
 
 model = mlflow.pyfunc.load_model(logged_model)
 
@@ -45,13 +45,13 @@ app = Flask('duration-prediction')
 
 @app.route('/predict', methods=['POST'])
 def predict_endpoint():
-    ride = request.get_json()
+    house = request.get_json()
 
-    features = prepare_features(ride)
+    features = prepare_features(house)
     pred = predict(features)
 
     result = {
-        'duration': pred,
+        'rent': pred,
         'model_version': best_run_id
     }
 

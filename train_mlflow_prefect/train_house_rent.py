@@ -1,4 +1,5 @@
 import argparse
+from copy import deepcopy
 import os
 import pickle
 
@@ -21,6 +22,8 @@ from prefect import flow, task
 from prefect.task_runners import SequentialTaskRunner
 import configparser
 import shutil
+from sklearn.pipeline import make_pipeline
+
 
 @task
 def dump_pickle(obj, filename):
@@ -51,16 +54,32 @@ def read_dataframe(filename: str):
     return df
 
 @task
-def preprocess(df: pd.DataFrame, dv: DictVectorizer, fit_dv: bool = False):
+def prepare_dictionaries(df: pd.DataFrame):
     df['City_Area'] = df['City'] + '_' + df['Area Locality']
     categorical = ['City_Area', 'Tenant Preferred']
     numerical = ['BHK', 'Size']
     dicts = df[categorical + numerical].to_dict(orient='records')
+    return dicts
+
+@task
+def preprocess(dicts, dv: DictVectorizer, fit_dv: bool = False):  
     if fit_dv:
         X = dv.fit_transform(dicts)
     else:
         X = dv.transform(dicts)
     return X, dv
+
+# @task
+# def preprocess(df: pd.DataFrame, dv: DictVectorizer, fit_dv: bool = False):
+#     df['City_Area'] = df['City'] + '_' + df['Area Locality']
+#     categorical = ['City_Area', 'Tenant Preferred']
+#     numerical = ['BHK', 'Size']
+#     dicts = df[categorical + numerical].to_dict(orient='records')
+#     if fit_dv:
+#         X = dv.fit_transform(dicts)
+#     else:
+#         X = dv.transform(dicts)
+#     return X, dv
 
 
 @task
@@ -69,8 +88,30 @@ def load_pickle(filename):
         return pickle.load(f_in)
 
 
+# @task
+# def train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test,params):
+
+#     SPACE = {
+#         'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
+#         'n_estimators': scope.int(hp.quniform('n_estimators', 10, 50, 1)),
+#         'min_samples_split': scope.int(hp.quniform('min_samples_split', 2, 10, 1)),
+#         'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 4, 1)),
+#         'random_state': 42
+#     }
+
+#     with mlflow.start_run():
+#         params = space_eval(SPACE, params)
+#         rf = RandomForestRegressor(**params)
+#         rf.fit(X_train, y_train)
+
+#         # evaluate model on the validation and test sets
+#         valid_rmse = mean_squared_error(y_valid, rf.predict(X_valid), squared=False)
+#         mlflow.log_metric("valid_rmse", valid_rmse)
+#         test_rmse = mean_squared_error(y_test, rf.predict(X_test), squared=False)
+#         mlflow.log_metric("test_rmse", test_rmse)
+
 @task
-def train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test,params):
+def train_and_log_model(dict_train, y_train, dict_val, y_val, dict_test, y_test, params):
 
     SPACE = {
         'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
@@ -81,15 +122,36 @@ def train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test,param
     }
 
     with mlflow.start_run():
+        params2 = deepcopy(params)
         params = space_eval(SPACE, params)
-        rf = RandomForestRegressor(**params)
-        rf.fit(X_train, y_train)
+        mlflow.log_params(params)
+
+        pipeline = make_pipeline(
+            DictVectorizer(),
+            RandomForestRegressor(**params)
+        )
+
+        pipeline.fit(dict_train, y_train)
+        y_pred_val = pipeline.predict(dict_val)
+
+        params2 = space_eval(SPACE, params2)
+        pipeline2 = make_pipeline(
+            DictVectorizer(),
+            RandomForestRegressor(**params)
+        )        
+
+        pipeline2.fit(dict_train, y_train)
+        y_pred_test = pipeline2.predict(dict_test)
 
         # evaluate model on the validation and test sets
-        valid_rmse = mean_squared_error(y_valid, rf.predict(X_valid), squared=False)
+        valid_rmse = mean_squared_error(y_val, y_pred_val, squared=False)
         mlflow.log_metric("valid_rmse", valid_rmse)
-        test_rmse = mean_squared_error(y_test, rf.predict(X_test), squared=False)
+        test_rmse = mean_squared_error(y_test, y_pred_test, squared=False)
         mlflow.log_metric("test_rmse", test_rmse)
+        # log the pipeline  
+        mlflow.sklearn.log_model(pipeline, artifact_path="model")
+        
+
 
 @task
 def promote_best_model(stage):
@@ -193,10 +255,19 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     y_valid = df_valid[target].values
     y_test = df_test[target].values
 
+    df_train = df_train.drop(columns=target)
+    df_valid = df_valid.drop(columns=target)
+    df_test = df_test.drop(columns=target)
+
     dv = DictVectorizer()
-    X_train, dv = preprocess(df_train, dv, fit_dv=True).result()
-    X_valid, _ = preprocess(df_valid, dv, fit_dv=False).result()
-    X_test, _ = preprocess(df_test, dv, fit_dv=False).result()
+
+    dicTrain = prepare_dictionaries(df_train)
+    dicValid = prepare_dictionaries(df_valid)
+    dicTest = prepare_dictionaries(df_test)
+
+    X_train, dv = preprocess(dicTrain, dv, fit_dv=True).result()
+    X_valid, _ = preprocess(dicValid, dv, fit_dv=False).result()
+    X_test, _ = preprocess(dicTest, dv, fit_dv=False).result()
 
     os.makedirs(dest_path, exist_ok=True)
 
@@ -238,7 +309,7 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     )
   
     for run in runs:
-        train_and_log_model(X_train, y_train, X_valid, y_valid, X_test, y_test, params=run.data.params)
+        train_and_log_model(dicTrain, y_train, dicValid, y_valid, dicTest, y_test, params=run.data.params)
    
     experiment = client.get_experiment_by_name(EXPERIMENT_NAME)
     best_run = client.search_runs(
@@ -254,6 +325,10 @@ def main_flow(raw_data_path: str, dest_path: str, num_trials_hpo=50, log_top_bes
     os.environ["BEST_RUN_ID"] = best_run.info.run_id
     run_id = os.getenv('BEST_RUN_ID', '')
     print(f'Best run id: {run_id}')
+
+    path_art = mlflow.artifacts.download_artifacts(run_id=best_run.info.run_id, dst_path="./mlflow_artifacts")
+    print(path_art)
+    shutil.copy('./mlflow_artifacts/model/model.pkl', '../web-service')
 
 
     # save the id of the best run and the path to the dictionary vectorizer
